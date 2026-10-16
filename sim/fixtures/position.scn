@@ -1,0 +1,42 @@
+# Repeated sells hit our bid until the position limit (500 shares) blocks it.
+#
+# Each round, a seller clears the best bid and our 100 shares at 99.99, then
+# the bid refills. We re-enter the bid after each fill until we are long 500:
+# after that a new buy of 100 would exceed the limit, so the bid side stops
+# while the ask keeps quoting. Finally a buyer lifts our ask, the position
+# drops to 400, and the bid comes back.
+#
+# Participants: 2 and 3 provide the book, 4 takes liquidity.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 30_000_000
+
+0            2 enter 1 B 500 100.00
+0            2 enter 2 B 300 99.98
+0            3 enter 1 S 500 100.01
+0            3 enter 2 S 400 100.02
+0            3 enter 3 S 300 100.03
+
+# Five rounds: sell 600 at 99.99 (clears 100.00 and our 100), then the bid
+# refills at 100.00.
+2_000_000    4 enter 1 S 600 99.99 ioc
+3_000_000    2 enter 3 B 500 100.00
+5_000_000    4 enter 2 S 600 99.99 ioc
+6_000_000    2 enter 4 B 500 100.00
+8_000_000    4 enter 3 S 600 99.99 ioc
+9_000_000    2 enter 5 B 500 100.00
+11_000_000   4 enter 4 S 600 99.99 ioc
+12_000_000   2 enter 6 B 500 100.00
+14_000_000   4 enter 5 S 600 99.99 ioc
+15_000_000   2 enter 7 B 500 100.00
+
+# Long 500: the bid side is blocked. Market activity keeps arriving.
+17_000_000   2 enter 8 B 200 99.99
+18_000_000   2 cancel 8
+
+# A buyer lifts the offer through our ask at 100.02: long 400, bid resumes.
+20_000_000   4 enter 6 B 1000 100.02 ioc
+22_000_000   3 enter 4 S 500 100.01
+22_000_000   3 enter 5 S 400 100.02

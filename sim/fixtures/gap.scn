@@ -1,0 +1,31 @@
+# A market data message is dropped before it reaches the app.
+#
+# The app detects the gap in feed sequence numbers, cancels both quotes, and
+# stops quoting for the rest of the run, even though the market keeps moving.
+#
+# Participants: 2 and 3 provide the book, 5 adds depth.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 20_000_000
+
+# The Add for participant 5's ask at 6 ms (feed sequence 8) never arrives.
+# (Sequences 1-4 are the initial book, 5-6 our quotes, 7 participant 5's bid.)
+drop_market_data 8
+
+0            2 enter 1 B 500 100.00
+0            2 enter 2 B 400 99.99
+0            3 enter 1 S 500 100.01
+0            3 enter 2 S 400 100.02
+
+# Depth changes: harmless.
+3_000_000    5 enter 1 B 200 99.98
+6_000_000    5 enter 2 S 200 100.03
+
+# The next message after the drop reveals the gap.
+8_000_000    5 enter 3 B 100 99.97
+
+# The market moves; the app no longer reacts.
+10_000_000   3 cancel 1
+12_000_000   2 enter 3 B 300 100.01

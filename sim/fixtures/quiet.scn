@@ -1,0 +1,45 @@
+# A quiet session: a one-tick market with activity behind the top and a few
+# size changes at the top, but no trades. Most messages lead to no order.
+#
+# The book is built one side at a time, so the app starts with an invalid
+# book (no asks) and must not quote until both sides exist.
+#
+# Participants: 2 and 3 provide the top of book, 5 adds and pulls depth.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 20_000_000
+
+# Bids first: the book has no asks yet.
+0            2 enter 1 B 500 100.00
+0            2 enter 2 B 400 99.99
+0            2 enter 3 B 300 99.98
+
+# Asks arrive: 100.00 x 100.01.
+200_000      3 enter 1 S 500 100.01
+200_000      3 enter 2 S 400 100.02
+200_000      3 enter 3 S 300 100.03
+
+# Depth comes and goes behind the top.
+2_000_000    5 enter 1 B 200 99.97
+2_500_000    5 enter 2 S 200 100.04
+3_000_000    5 enter 3 B 100 99.96
+4_000_000    5 cancel 1
+5_000_000    5 enter 4 S 300 100.05
+6_000_000    5 cancel 2
+7_000_000    5 enter 5 B 250 99.97
+8_000_000    5 cancel 3
+
+# Size changes at the top: fair value moves, but not by enough to change
+# the rounded quote prices.
+9_000_000    2 cancel 1 200
+10_000_000   3 enter 4 S 300 100.01
+11_000_000   5 cancel 4
+12_000_000   2 enter 4 B 300 100.00
+13_000_000   3 cancel 1 100
+14_000_000   5 enter 6 S 150 100.03
+15_000_000   5 cancel 5
+16_000_000   5 enter 7 B 100 99.98
+17_000_000   5 cancel 6
+18_000_000   5 cancel 7

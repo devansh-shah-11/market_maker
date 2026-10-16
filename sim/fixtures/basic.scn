@@ -1,0 +1,34 @@
+# A small session exercising every market data message type.
+#
+# Participants 2 and 3 are resting liquidity providers; participant 4 takes
+# liquidity. Times are in nanoseconds.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 10_000_000
+
+# Build the initial book: 100.00 x 100.05, two levels on each side.
+0          2 enter 1 B 200 99.99
+0          2 enter 2 B 300 100.00
+0          3 enter 1 S 300 100.05
+0          3 enter 2 S 200 100.06
+
+# A second bid joins the best level behind participant 2 (time priority).
+500_000    3 enter 3 B 100 100.00
+
+# Best bid improves.
+1_200_000  2 enter 3 B 100 100.01
+
+# A marketable sell sweeps 100.01 and part of 100.00.
+2_000_000  4 enter 1 S 250 100.00 ioc
+
+# Participant 3 reduces its ask, then pulls its bid.
+3_000_000  3 cancel 1 100
+3_100_000  3 cancel 3
+
+# Participant 2 moves its 100.00 bid up a tick (loses priority, new ref).
+4_000_000  2 replace 2 4 150 100.01
+
+# A marketable buy lifts the offer and rests the remainder at 100.05.
+5_000_000  4 enter 2 B 400 100.05

@@ -1,0 +1,29 @@
+# The ask side empties for a while, then comes back.
+#
+# While there are no asks (excluding our own), the book is invalid: the app
+# must skip requoting but leave its resting quotes alone. When asks return,
+# it requotes.
+#
+# Participants: 2 and 3 provide the book.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 20_000_000
+
+0            2 enter 1 B 500 100.00
+0            2 enter 2 B 400 99.99
+0            3 enter 1 S 500 100.01
+0            3 enter 2 S 400 100.02
+
+# All market asks pulled. Our own ask is still resting, but it doesn't count.
+5_000_000    3 cancel 1
+5_000_100    3 cancel 2
+
+# Bids move while the ask side is empty: no requote.
+7_000_000    2 enter 3 B 200 100.01
+8_000_000    2 cancel 1
+
+# Asks return, higher: 100.01 x 100.04. Both quotes move up.
+12_000_000   3 enter 3 S 300 100.04
+12_000_000   3 enter 4 S 300 100.05

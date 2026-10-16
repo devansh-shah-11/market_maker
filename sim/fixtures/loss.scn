@@ -1,0 +1,55 @@
+# We get filled long, then the market falls until the loss limit ($100)
+# trips at a timer tick.
+#
+# Sellers hit our bid repeatedly while the market steps down a few cents at
+# a time. The loss is only checked on the timer, marked to the mid sampled
+# there. Once it breaches, the app cancels everything and stops quoting.
+#
+# Participants: 2 and 3 provide the book, 4 takes liquidity.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 40_000_000
+
+0            2 enter 1 B 500 100.00
+0            3 enter 1 S 500 100.01
+
+# Each round: sell through our bid, then the whole market re-forms 5 cents
+# lower (bids first, then asks, then the old asks are pulled).
+2_000_000    4 enter 1 S 600 99.99 ioc
+3_000_000    2 enter 2 B 500 99.95
+3_000_000    3 enter 2 S 500 99.96
+3_000_100    3 cancel 1
+
+5_000_000    4 enter 2 S 600 99.94 ioc
+6_000_000    2 enter 3 B 500 99.90
+6_000_000    3 enter 3 S 500 99.91
+6_000_100    3 cancel 2
+
+8_000_000    4 enter 3 S 600 99.89 ioc
+9_000_000    2 enter 4 B 500 99.85
+9_000_000    3 enter 4 S 500 99.86
+9_000_100    3 cancel 3
+
+11_000_000   4 enter 4 S 600 99.84 ioc
+12_000_000   2 enter 5 B 500 99.80
+12_000_000   3 enter 5 S 500 99.81
+12_000_100   3 cancel 4
+
+# No more fills; the market keeps falling. Each step pulls the old bid
+# first, so the new ask doesn't trade against it.
+15_000_000   2 cancel 5
+15_000_000   2 enter 6 B 500 99.70
+15_000_100   3 enter 6 S 500 99.71
+15_000_100   3 cancel 5
+
+18_000_000   2 cancel 6
+18_000_000   2 enter 7 B 500 99.60
+18_000_100   3 enter 7 S 500 99.61
+18_000_100   3 cancel 6
+
+21_000_000   2 cancel 7
+21_000_000   2 enter 8 B 500 99.50
+21_000_100   3 enter 8 S 500 99.51
+21_000_100   3 cancel 7

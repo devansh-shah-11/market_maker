@@ -1,0 +1,36 @@
+# Sweeps through our quotes.
+#
+# 1. A seller sweeps the bid through our quote at 99.99 and partially fills
+#    it: the remainder rests and is not topped up.
+# 2. The bid refills, fair value moves, and our requote restores full size.
+# 3. A buyer sweeps the ask through our quote at 100.02 and fills it
+#    completely: we re-enter the ask while handling the fill report.
+#
+# Participants: 2 and 3 provide the book, 4 takes liquidity.
+
+latency market_data 5_000
+latency order_entry 10_000
+timer 1_000_000
+end 20_000_000
+
+0            2 enter 1 B 500 100.00
+0            2 enter 2 B 400 99.99
+0            2 enter 3 B 300 99.98
+0            3 enter 1 S 500 100.01
+0            3 enter 2 S 400 100.02
+0            3 enter 3 S 300 100.03
+
+# We join 99.99 behind participant 2 (time priority). Sell 500 + 400 + 50:
+# clears 100.00 and participant 2's 99.99, then 50 of our 100.
+3_000_000    4 enter 1 S 950 99.99 ioc
+
+# The bid refills at 100.00: fair value rises, so our bid replaces up.
+5_000_000    2 enter 4 B 500 100.00
+5_000_000    2 enter 5 B 400 99.99
+
+# Buy through the ask up to our quote at 100.02, which fills completely.
+10_000_000   4 enter 2 B 1000 100.02 ioc
+
+# The ask refills.
+12_000_000   3 enter 4 S 500 100.01
+12_000_000   3 enter 5 S 400 100.02
