@@ -120,6 +120,47 @@ The doc's section for each is in brackets.
 - *How to check:* compute `send.time − delivery.entry` from `capture.csv` for deliveries that caused sends, and compare mean, median and p99 against the existing report, on a longer scenario.
 - *Tentative read:* the clearest flaw of the 13, with several separate angles, so you'd choose which angle to argue.
 
+**Detailed explanation of the evaluation (worked through in discussion)**
+
+*What the doc's method does.* Two sources of timestamps, both from `sim::WallClockNow()`:
+- The **capture tap** stamps each message when it reaches the app, and stamps each `Send`, outside our code.
+- **`LatencyLog`** stamps when each handler *finishes*, keyed by sequence number (or timer-tick time). The report joins the two on the key, takes finish minus arrival per message, and averages over every message.
+- It exists because most messages never produce a `Send` (market data that leaves quotes unchanged, timer ticks, exchange reports), so the tap alone has no end time for them. The handler-end stamp gives them one.
+
+*Which ticks does tick-to-trade cover?* Only the ones that produced an order. By definition, no order means no "trade" end, so nothing to measure. The non-sending callbacks are still work, but they are a different metric (average work per callback) and the doc blends them into the headline number. In `basic`, 43 of 54 callbacks sent nothing and 10 are timer ticks that can never send, so the doc's average mostly describes "nothing to do" messages.
+
+*How one callback sends two orders.* `Requote` runs `QuoteSide` for both sides on every message (`market_maker.cpp:91-92`). If the microprice moves, the bid and the ask can both change, so `SendQuote` runs twice in one callback: bid, then ask.
+
+```
+t_in ──────────────► t_bid_sent ──────────► t_ask_sent ──► callback returns
+ │                       │                      │               │
+ └── bid latency ────────┘                      │               └ LatencyLog stamps here
+ └── ask latency ───────────────────────────────┘
+```
+
+- Both orders are measured from the *same* start, the tick's arrival (`t_in`).
+- Bid latency = `t_bid_sent − t_in`. Ask latency = `t_ask_sent − t_in`.
+- The ask's latency includes the bid's send work (history `push_back`, decision-log `fprintf`, encode, `Send`). That is correct: the ask really waited for it.
+- The doc's metric gives one number per callback, stamped after *both* sends. So it overstates the bid's latency and hides the serial-send cost of the ask.
+
+*Why the evaluation is redundant.* For each `Send` the tap records the wall time and which delivery caused it. Each delivery has an entry time. So `send.time − delivery.entry_time` is the exact tick-to-trade for that order, from the tap alone. `LatencyLog` and the join are not needed for the question the assignment asks. Its only extra information is the handler-end time, which answers a different question.
+
+*Summary of what is wrong (the angles you can argue):*
+1. **Wrong population:** averaged over mostly non-sending messages.
+2. **Wrong endpoint:** handler return, not order departure.
+3. **Mean hides the tail:** mean 2,704 ns vs median 83 ns; the first callback (116,083 ns) is about 80% of the total.
+4. **Redundant:** the tap already contains what is needed.
+
+**Proposed correction (decided in discussion)**
+- Comment out / remove `LatencyLog` and its `Record` calls (`market_maker.cpp:40, 70, 129`).
+- For every order sent, compute `send.time − delivery.entry_time` from the tap's records.
+- Report the **entire distribution**: count, mean, median, p99, max (and the sorted list or a histogram if short).
+- This happens **only for sends**. Callbacks that sent nothing have no send record, so they add no sample. That is intended, since they have no tick-to-trade.
+- **Cold start is not treated separately.** The first order is a real order and its latency is real. Reporting the full distribution lets the tail show it without hiding or excluding anything. (With only 11 sends in `basic`, p99 is effectively the max, so the first send will be visible.)
+- **Split by order position (first vs second order in a callback)** is kept as an optional extra view. It shows the serial-send cost directly, but it is not the headline. Be aware that the second order's extra time is mostly the first order's send work, so the split mainly describes that cost.
+- **Side benefits:** removes one clock read per callback (about 20 ns) from every handler, and removes the preallocated log.
+- **Caveats:** the claim that the send record names its causing delivery comes from the guide and README; confirm the `capture.csv` columns before relying on it. With 11 sends, percentiles are coarse, and the Mac's clock steps of about 41 ns limit resolution. Use a longer scenario for stable percentiles.
+
 **Your verdict:** ______
 
 ---
