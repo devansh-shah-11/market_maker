@@ -113,9 +113,9 @@ The doc's section for each is in brackets.
 - *What doesn't match the assignment's goal:* the goal is tick-to-trade, and this metric differs from it in several ways:
   1. **Wrong population.** In `basic`, 43 of 54 callbacks sent nothing (and 10 of the 54 are timer ticks that never send). The average is mostly "nothing to do" messages.
   2. **Wrong endpoint.** It stops at the end of the callback, not when the order leaves. In callbacks that send two orders, the first leaves earlier than the callback ends.
-  3. **The mean hides the tail.** Measured here: mean over all 54 callbacks = **2,704 ns**, median = **83 ns**. The first callback alone took **116,083 ns**, about 80% of the total time of all 54.
+  3. **The mean hides the tail, and the mean itself is unstable.** In one earlier `basic` run (single run, read from `latency_log.csv`, not reproduced) the mean over all 54 callbacks was 2,704 ns, the median 83 ns, and the first callback alone took 116,083 ns, about 80% of the total. Across repeated identical runs the printed mean itself moves a lot (see "Measured results" below).
   4. **It's redundant.** The tap already records each send's wall time and which delivery caused it. Subtracting the delivery's entry time gives tick-to-trade directly, with no `LatencyLog` at all.
-- *Measured here:* tick-to-first-send over only the 11 callbacks that sent: mean **1,402 ns**. That's about half the reported 2,704 ns and measures a different thing.
+- *Measured here:* see "Measured results" below. (An earlier version of this guide said the mean tick-to-first-send over the 11 sending callbacks in `basic` was 1,402 ns. That did not reproduce: from `capture.csv` of one run it was about 875 ns, and it varies from run to run.)
 - *Caveats:* one run, 54 messages, macOS clock steps of about 41 ns.
 - *How to check:* compute `send.time − delivery.entry` from `capture.csv` for deliveries that caused sends, and compare mean, median and p99 against the existing report, on a longer scenario.
 - *Tentative read:* the clearest flaw of the 13, with several separate angles, so you'd choose which angle to argue.
@@ -152,7 +152,7 @@ t_in ──────────────► t_bid_sent ──────
 4. **Redundant:** the tap already contains what is needed.
 
 **Proposed correction (decided in discussion)**
-- Comment out / remove `LatencyLog` and its `Record` calls (`market_maker.cpp:40, 70, 129`).
+- Stop using `LatencyLog` for the headline number (remove it, or just leave it unused; see "Conclusion on `LatencyLog`" below).
 - For every order sent, compute `send.time − delivery.entry_time` from the tap's records.
 - Report the **entire distribution**: count, mean, median, p99, max (and the sorted list or a histogram if short).
 - This happens **only for sends**. Callbacks that sent nothing have no send record, so they add no sample. That is intended, since they have no tick-to-trade.
@@ -160,6 +160,63 @@ t_in ──────────────► t_bid_sent ──────
 - **Split by order position (first vs second order in a callback)** is kept as an optional extra view. It shows the serial-send cost directly, but it is not the headline. Be aware that the second order's extra time is mostly the first order's send work, so the split mainly describes that cost.
 - **Side benefits:** removes one clock read per callback (about 20 ns) from every handler, and removes the preallocated log.
 - **Caveats:** the claim that the send record names its causing delivery comes from the guide and README; confirm the `capture.csv` columns before relying on it. With 11 sends, percentiles are coarse, and the Mac's clock steps of about 41 ns limit resolution. Use a longer scenario for stable percentiles.
+
+**Conclusion on `LatencyLog`: it does compute things, but it is redundant**
+
+Redundant, because it is not needed to answer the assignment's question:
+- The question is tick-to-trade: tick arrival to order departure. The tap already stamps both ends, outside our code: the delivery's `entry` and each `Send`'s `time`, with the send naming its causing delivery (confirmed in `build/out/basic/capture.csv`: column 2 of a `send` row is the delivery index).
+- `send.time − delivery.entry` is therefore exact, per order, from `capture.csv` alone. `LatencyLog` adds only a handler-*end* time, which answers a different question ("how long did the callback take, including after the send"). It adds nothing about when an order left.
+- Its output, an average over every delivery, then dilutes the answer with callbacks that sent nothing (see below).
+
+What it costs, stated precisely:
+- **After the run (free for latency):** the join (`analysis.h`), the average and the printing all happen after `simulator.Run` returns. They do no work between a tick and an order, so they cost nothing on the hot path.
+- **During the run (not free, but small):** `Record` still runs at the end of every callback: one clock read (about 20 ns per the README) and one `push_back` into pre-reserved memory (no allocation, no I/O). It runs *after* `Requote` and after any `Send`, so it cannot delay an order in its own callback. It can only touch the next message's timing through cache effects, since that message's entry stamp is taken after the callback returns. That is below the Mac's roughly 41 ns clock resolution and tiny next to the 200 ns to 20 µs order latencies measured below.
+- So "it costs nothing on the hot path" holds for the report, and holds to within noise for `Record`. A measured saving from removing it was **not** tested; claim it only as an expectation.
+- The evidence for the critique does not require changing the app: `tools/latency_compare.py` computes the tap-based distribution externally from `capture.csv`.
+
+**Measured results** (`tools/latency_compare.py`, 30 runs per fixture, no `--trace`; all orders from all runs pooled, no run dropped)
+
+How it was measured:
+- The script runs exactly `./build/market_maker sim/fixtures/<name>.scn` (no `--out`). The "current report" column is the `average latency:` line the binary prints, taken as is, averaged over the 30 runs. Nothing is recomputed by the script. That figure uses `LatencyLog`.
+- The tick-to-trade columns use only `capture.csv` from the same runs: for every order sent, `send.time − entry of the delivery that caused it`. Callbacks that sent nothing add no sample. Times in ns. "Deliveries" includes timer ticks.
+
+How the numbers are computed (so the tables can be reproduced and checked):
+- **Counts.** "Orders sent" counts orders. "Sending" (callbacks that sent) counts deliveries that caused at least one order. One callback can send two orders, a bid and an ask. Example: `quiet` has 1 sending callback and 2 orders per run (delivery 3 sends a bid and an ask at the same simulated time; see `build/out/quiet/capture.csv`).
+- **Pooling across runs.** The script does not compute a median per run and then combine them. For each fixture it puts the tick-to-trade of every order from all 30 runs into one list (for example `quiet`: 30 runs × 2 orders = 60 values; `basic`: 30 × 14 = 420), sorts it, and reads the statistics from that single list: mean = average, median = middle value (average of the two middle values if the count is even), p99 = nearest rank, the value at position `ceil(0.99 × n)`, max = largest. With `n = 60`, p99 is therefore the max (`quiet` shows the same number twice); with `n = 420` it is the 416th value, so only 4 values lie above it.
+- **The "current report" column** is different: it is the average over the 30 runs of the 30 printed means (a mean of means). The spread of those 30 printed means (min to max) is also computed by the script but is not in these tables.
+- **Random gaps.** Setting 2 sleeps a random 300 to 800 ms before each run (uniform) so the CPU is not kept hot by back-to-back runs.
+
+Setting 1, runs back to back (CPU stays hot):
+
+| fixture | deliveries | orders sent | **current report (mean of runs)** | tick-to-trade mean | median | p99 | max |
+|---|---|---|---|---|---|---|---|
+| basic | 54 | 14 | 856 | 920 | 292 | 5,875 | 6,542 |
+| empty_side | 42 | 6 | 1,325 | 1,847 | 625 | 6,000 | 6,959 |
+| gap | 36 | 4 | 1,786 | 4,418 | 3,812 | 18,375 | 21,250 |
+| loss | 118 | 21 | 1,072 | 1,021 | 333 | 5,667 | 6,334 |
+| position | 117 | 30 | 651 | 719 | 333 | 5,583 | 8,166 |
+| quiet | 48 | 2 | 801 | 4,578 | 4,270 | 13,208 | 13,208 |
+| sweep | 59 | 11 | 772 | 1,136 | 417 | 6,083 | 7,084 |
+
+Setting 2, random 300 to 800 ms sleep before every run (CPU not kept hot; this is the final configuration):
+
+| fixture | deliveries | orders sent | **current report (mean of runs)** | tick-to-trade mean | median | p99 | max |
+|---|---|---|---|---|---|---|---|
+| basic | 54 | 14 | 2,998 | 2,902 | 666 | 22,917 | 25,875 |
+| empty_side | 42 | 6 | 5,148 | 6,944 | 1,520 | 29,792 | 32,709 |
+| gap | 36 | 4 | 6,931 | 15,920 | 12,646 | 63,959 | 67,667 |
+| loss | 118 | 21 | 3,244 | 3,696 | 750 | 24,750 | 211,459 |
+| position | 117 | 30 | 2,436 | 2,257 | 667 | 27,042 | 38,292 |
+| quiet | 48 | 2 | 3,095 | 15,396 | 15,229 | 27,500 | 27,500 |
+| sweep | 59 | 11 | 3,143 | 3,856 | 1,000 | 24,250 | 28,541 |
+
+What this shows:
+1. **The current report does not track tick-to-trade.** On `quiet` (1 of 48 deliveries sends, 2 orders per run) the report says 801 ns (setting 1) or 3,095 ns (setting 2), while the typical order takes 4,270 or 15,229 ns, about 5x more. `gap` and `empty_side` are understated too. On `basic` the report's mean is close to the tap's mean but 3 to 6x the median (856 vs 292; 2,998 vs 666): a few slow orders dominate the mean.
+2. **Which fixtures it understates depends on how many callbacks send.** Fixtures with few sends (`quiet`, `gap`, `empty_side`) are understated; fixtures where many callbacks send (`position`, `loss`) land near the tap mean, by coincidence of the mix. In `sweep` and `basic` setting 2 the report is close to the tap mean, again by coincidence of the mix.
+3. **The median is far below the mean, and the tail is long.** Back to back: median 292 to 417 ns on the busy fixtures, p99 5.6 to 6.1 µs. With 300 to 800 ms sleeps, the median is 666 to 1,000 ns and p99 rises to 23 to 27 µs, with single outliers up to 211 µs (`loss`). The first order of a fresh process is slow, and every run is a fresh process, so every run contributes a cold order to the pool. Per the decision above, those stay in the data.
+4. **Absolute numbers depend on how the runs are launched.** The same binary on the same input gives a `basic` report mean of about 856 ns back to back and about 3,000 ns with 300 to 800 ms sleeps. One batch of manual terminal runs (1,224 to 2,048 ns, one earlier run at 2,704 ns) falls in between, so neither setting exactly reproduces it. A single printed number is not a stable measurement, which is itself a point against a mean-of-everything headline. Any before/after comparison must use the same launch method on both sides.
+5. **The second order of a callback is slower than the first** (about 2x at the median, e.g. `basic` setting 1: 250 vs 459 ns), because it waits for the first order's send work.
+6. Caveats: percentiles on the small fixtures are coarse (`quiet` pools 60 orders), the clock steps in about 41 ns on this Mac, and the cause of the setting 1 vs 2 gap (CPU power state, cold caches, scheduling) was not isolated.
 
 **Your verdict:** ______
 

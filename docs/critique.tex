@@ -40,7 +40,9 @@
 Replace this paragraph with your answer.
 
 \prompt{Describe a flaw in the evaluation and a potential fix.}
-Replace this paragraph with your answer.
+The report averages (handler finish $-$ arrival) over every message, using \texttt{LatencyLog} for the finish time. That is not tick-to-trade: most messages send nothing, the clock stops when the handler returns rather than when the order leaves, and a mean hides the tail. Over 30 runs per fixture (\texttt{tools/latency\_compare.py}, orders pooled), only 1 of 48 messages in \texttt{quiet} sends; the report prints about 3,100\,ns but the median order takes about 15,200\,ns. In \texttt{basic} the report's mean is about 3,000\,ns, while the median order takes 666\,ns and the p99 is 22,900\,ns.
+
+The capture tap already records each order's send time and the delivery that caused it, so \texttt{LatencyLog} is redundant. Instead, report send time minus that delivery's entry time for every order, as a distribution (median, p99, max) that keeps the cold first order; messages that send nothing then drop out. The log's report runs after the run, so we expect removing it to save little, but we did not measure this.
 
 \prompt{Describe a good design decision in the market maker.}
 Replace this paragraph with your answer.
