@@ -41,9 +41,7 @@ Let's consider a hotpath execution. Taking the basic.scn example, a competitor s
 
 \prompt{Describe a flaw in the evaluation and a potential fix.}
 
-The evaluation measures the time taken by the handler to process a message, but this is not the same as tick-to-trade latency. It includes messages that do not result in an order being sent. It also measures until the handler returns, and not till when the order is actually sent. This can mask the actual latency. 
-
-A potential fix is the capture tap already records the delivery entry time and order send time. I would use these timestamps to diretly calculate the latency for each order that is actually sent. I would also measure the median, p99, and maximum latency instead of only the average. This would give an accurate picture of the jitter and latency of the system.
+The evaluation measures the time taken by the handler to process a message. The design justifies averaging over every message because messages that do not trade still cause work. However, tick-to-trade is the time from a message arriving to the order being sent, so messages that send no order should not be part of it, and they dilute the average. It also measures until the handler returns, and not till when the order is actually sent. This can mask the actual latency. A potential fix is the capture tap already records the delivery entry time, the order send time, and which message was being handled when the order was sent. I would use these timestamps to directly calculate the latency for each order that is actually sent. I would also measure the median, p99, and maximum latency instead of only the average, since the average hides rare slow cases. This would give an accurate picture of the jitter and latency of the system.
 
 \prompt{Describe a good design decision in the market maker.}
 
@@ -51,7 +49,7 @@ One good design decision is storing orders in a flat array indexed by the exchan
 
 \prompt{Describe a flaw in the market maker and a potential fix.}
 
-The risk checks use exceptions to signal problems. The design justifies this by saying exceptions cost nothing when not thrown, and that once one is thrown we are no longer on the hotpath. However, if it is an invalid order book or a position limit is reached, the other side's order is sent right after an exception was thrown and caught. While the position is near the limit, it can cause exceptions repeatedly while processing market messages. The handler catches these exceptions and continues, so the same condition can be encountered again on the next message. This is costly!
+The risk checks use exceptions to signal problems. The design justifies this by saying exceptions cost nothing when not thrown, and that once one is thrown we are no longer on the hotpath. However, this is not true. If the position limit is reached on one side, the exception is caught and the other side's order is still sent right after, so the throw sits on the tick-to-trade path. An invalid book is also checked. Since the position check runs before the check for an unchanged quote, a position near the limit throws on every message, even when no order needs to be sent. Throwing and catching is an expensive operation.
 
 Instead of throwing exceptions, I would update the checks to return a status. The caller can then branch on it, which is a predictable compare so minimal cost. Marking the return value as \texttt{[[nodiscard]]} would also help prevent callers from ignoring it. This makes the error handling more explicit and avoids unnecessary exception handling during repeated message processing.
 
@@ -59,6 +57,6 @@ Instead of throwing exceptions, I would update the checks to return a status. Th
 
 The market maker writes every order to \texttt{decisions.log} using \texttt{fprintf} before sending it. This adds formatting and I/O overhead to the tick-to-trade path. Also, since the log is buffered inside the process, recent entries can be lost if the process crashes. This means we pay the latency cost of logging without getting the full guarantee of a write-ahead log.
 
-I would write the log entry after \texttt{Send} returns, after both bid and ask have been sent. This keeps logging overhead out of the order send path. However, if the process crashes between sending the order and writing the log, it could be live on the exchange without a record. If a real crash guarantee is needed, a fixed-size binary record can be copied with \texttt{memcpy} into a memory-mapped file. 
+I would replace \texttt{fprintf} with a binary record copied with \texttt{memcpy} into a memory-mapped file. This removes the formatting cost and the occasional write when the buffer fills up. Since the kernel owns the mapped pages, the entries also survive a process crash, so we sre guaranteed the log.
 
 \end{document}
