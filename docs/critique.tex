@@ -30,7 +30,7 @@
 \noindent\fbox{%
   \begin{minipage}{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
     % Describe how you collaborated with other students, which AI tools you used, and how you used them.
-    Replace this paragraph with your statement.
+    For understanding this assignment, I used Claude Code by Anthropic. I used it to walk me through the basic and sweep scenario in complete detail. Then, I used it to understand the flow and logic of the code. I also provided the design document and asked questions about it to strengthen my understanding. I also used Claude's help to write a python script to compare tick-to-trade latency using the current method and the \texttt{capture.csv} method, to observe the gap between the two evaluation approaches. My friend Sarvesh and I discussed our understanding and perspectives for better clarity.
   \end{minipage}%
 }
 
@@ -45,18 +45,18 @@ The evaluation measures the time taken by the handler to process a message. The 
 
 \prompt{Describe a good design decision in the market maker.}
 
-One good design decision is storing orders in a flat array indexed by the exchange order reference instead of using a hash map. The array lets the system find an order directly without hashing or following pointers to separately allocated nodes. This works because exchange references are issued in increasing order, so the array is relatively dense. Recent orders are close together, so a lookup costs at most one cache miss. The 16\,MB array is allocated and zeroed at startup, so there is no allocation overhead during message processing, but its capacity is fixed at about a million references.
+One good design decision is storing orders in a flat array indexed by the exchange order reference instead of using a hash map. The array lets the system find an order directly without hashing or following pointers to separately allocated nodes. This works because exchange references are issued in increasing order, so the array is relatively dense. A lookup is a single indexed load, so it costs at most one cache miss. The 16\,MB array is allocated and zeroed at startup, so there is no allocation overhead during message processing, but its capacity is fixed at about a million references.
 
 \prompt{Describe a flaw in the market maker and a potential fix.}
 
-The risk checks use exceptions to signal problems. The design justifies this by saying exceptions cost nothing when not thrown, and that once one is thrown we are no longer on the hotpath. However, this is not true. If the position limit is reached on one side, the exception is caught and the other side's order is still sent right after, so the throw sits on the tick-to-trade path. An invalid book is also checked. Since the position check runs before the check for an unchanged quote, a position near the limit throws on every message, even when no order needs to be sent. Throwing and catching is an expensive operation.
+The risk checks use exceptions to signal problems. The design justifies this by saying exceptions cost nothing when not thrown, and that once one is thrown we are no longer on the hotpath. However, this is not true. If the bid side is blocked by the position limit, the exception is caught and the ask side is still quoted right after, so the throw sits on the tick-to-trade path. An invalid book also throws on every message while a side is empty. Since the position check runs before the check for an unchanged quote, a position near the limit throws on every message, even when no order needs to be sent. Throwing and catching is an expensive operation.
 
-Instead of throwing exceptions, I would update the checks to return a status. The caller can then branch on it, which is a predictable compare so minimal cost. Marking the return value as \texttt{[[nodiscard]]} would also help prevent callers from ignoring it. This makes the error handling more explicit and avoids unnecessary exception handling during repeated message processing.
+Instead of throwing exceptions, I would update the checks to return a status. The caller can then branch on it, which is a predictable compare so minimal cost. Marking the return value as \texttt{[[nodiscard]]} would also help prevent callers from ignoring it.
 
 \prompt{Describe a second flaw in the market maker and a potential fix.}
 
 The market maker writes every order to \texttt{decisions.log} using \texttt{fprintf} before sending it. This adds formatting and I/O overhead to the tick-to-trade path. Also, since the log is buffered inside the process, recent entries can be lost if the process crashes. This means we pay the latency cost of logging without getting the full guarantee of a write-ahead log.
 
-I would replace \texttt{fprintf} with a binary record copied with \texttt{memcpy} into a memory-mapped file. This removes the formatting cost and the occasional write when the buffer fills up. Since the kernel owns the mapped pages, the entries also survive a process crash, so we sre guaranteed the log.
+I would replace \texttt{fprintf} with a binary record copied with \texttt{memcpy} into a preallocated memory-mapped file. This removes the formatting cost and the occasional write when the buffer fills up. Since the kernel owns the mapped pages, the entries also survive a process crash.
 
 \end{document}
