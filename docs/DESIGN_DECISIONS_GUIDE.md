@@ -120,6 +120,22 @@ The doc's section for each is in brackets.
 - *How to check:* compute `send.time − delivery.entry` from `capture.csv` for deliveries that caused sends, and compare mean, median and p99 against the existing report, on a longer scenario.
 - *Tentative read:* the clearest flaw of the 13, with several separate angles, so you'd choose which angle to argue.
 
+**Does the current metric include messages that never reach the market? Yes (checked in the code)**
+
+The reported `average latency:` includes every delivery, whether or not it caused an order. Nothing in the code filters on "did this callback send something".
+
+- `app/market_maker.cpp:39-40`: `OnMarketData` calls `Requote()` and then `latency_.Record(MarketData, seq)` unconditionally. `Requote()` may send nothing (quotes unchanged), and `Record` runs anyway.
+- `app/market_maker.cpp:69-70`: same for `OnExecutionReport`.
+- `app/market_maker.cpp:128-129`: `OnTimer` calls `Reconcile(now)` and then `latency_.Record(Timer, now)`. The timer never sends an order, yet it gets a record.
+- `app/evaluation/analysis.h:33-47`: the loop walks **every** `capture.deliveries` entry. The only condition is `completed.find(...) != end()`, meaning "a `LatencyLog` record exists for this delivery". It does not look at `capture.sends` at all. Each match adds `completed − d.entry` to `total_ns` and increments `count`.
+- `analysis.h:49-50`: prints `messages: <count>` and `average latency: total_ns / count`. `count` is all deliveries, not sends.
+
+Concretely, for `basic`: 54 callbacks are timed, 11 of them sent an order, and 10 are timer ticks that can never send. The other 43 are "no order left" messages, and they carry roughly 80% of the weight in the average. For those, the number measures time from arrival to the handler returning, not time to an order reaching the market, because no order exists.
+
+Two consequences:
+- The metric is **not** tick-to-trade. For non-sending messages it is a handler-duration figure. For sending messages it stops at handler return, not at the `Send`.
+- The only code that is restricted to orders actually sent is `WriteOrders` in `main.cpp` (iterates `capture.sends`) and the `capture.csv` `send` rows. The fix described below (use `send.time − delivery.entry` per entry in `capture.sends`) is the filter that is missing from `analysis.h`.
+
 **Detailed explanation of the evaluation (worked through in discussion)**
 
 *What the doc's method does.* Two sources of timestamps, both from `sim::WallClockNow()`:
@@ -238,9 +254,19 @@ What this shows:
 **Q3. On the hot path?** Yes. Every feed message about an existing order (`E`, `X`, `D`, `U`) calls `Lookup`, `Add` calls it too, and `MarkOwn` on reports.
 
 **Q4. Does the claim hold up?**
-- *What's right:* a lookup is one bounds check and one load, with no hashing and no allocation. Consecutive refs sit next to each other (4 orders per 64-byte cache line), and the active orders are recent refs, so they stay cached. The startup zeroing moves page faults to before the run.
-- *What it depends on:* the claim that refs are dense and increasing comes from the doc. The trace is consistent (refs 1, 2, 3, ...), but I haven't read the exchange code to confirm.
-- *Limits:* a ref of 1,048,576 or more throws `out_of_range`. Nothing catches it in `OnMarketData`, so it would unwind out of `Run` and `main` would exit with an error. And "no cache misses" only holds for recently touched entries: the table is 16 MB, bigger than a typical L2, so an old order's cancel could miss.
+- *What's right:* a lookup is one bounds check and one load, with no hashing and no allocation. Consecutive refs sit next to each other (4 orders per 64-byte cache line on typical x86; 8 per 128-byte line on this Apple Silicon Mac), and the active orders are recent refs, so they stay cached. The startup zeroing moves page faults to before the run.
+- *What it depends on:* the claim that refs are dense and increasing. **Confirmed in the exchange code:** `next_order_ref_` starts at 1 (`sim/exchange/exchange.h:73`) and is incremented in exactly two places, `exchange.cpp:44` (a new order that passed validation) and `exchange.cpp:89` (the new ref of a replace). Rejected and retransmitted orders return before line 44, so they consume no ref. Refs are therefore strictly increasing with no gaps in ref numbering. Two small points: slot 0 is never used, and a ref can be issued without ever appearing in the feed (an order that matches fully on arrival never calls `Rest`, so no `AddOrder` is published). Those slots just stay zeroed, which the array tolerates. Dense in the array sense is a little loose, but it is bounded by the number of orders accepted, so the table size is a function of run length.
+- *Also checked:* `Order` is `int64 price` (8) + `uint32 shares` (4) + `Side` (1 char) + `live` + `own` (1 byte each) = 15, padded to 16 bytes, so the 16 MB and 4-per-cache-line figures are right (`sim/messages/types.h:12`).
+- *Limits:* a ref of 1,048,576 or more throws `out_of_range` (`book.cpp:25-27`). Nothing in `OnMarketData` catches it. The only catch is in `main.cpp:103`, so it would unwind out of `Run`, print `error: ...` and `main` would return 1. The exchange issues one ref per accepted order and per replace, so the limit is hit after about a million of those, which no fixture comes close to.
+- *Cache behavior, measured (microbenchmark, not the app):* a 16 MB table of 16-byte entries, one lookup per random ref, each load dependent on the previous so they cannot overlap; 3 runs on this Mac (L1d 64 KB; L2 4 MB on efficiency cores, 16 MB on performance cores; cache line 128 B, not 64 B).
+
+  | Working set (refs touched) | Warm lookup | First touch after evicting the cache |
+  |---|---|---|
+  | 64 to 1,024 (1 to 16 KB) | 0.65 to 0.75 ns | 3 to 35 ns |
+  | 16,384 to 131,072 (0.25 to 2 MB) | 5.6 to 13.6 ns | 4 to 12 ns |
+  | 1,048,576 (the whole 16 MB) | 7.2 to 9.8 ns | 12.7 to 20.1 ns |
+
+  So an entry that is hot in L1 costs under 1 ns, an entry from the whole 16 MB table costs about 7 to 10 ns, and a truly cold entry costs roughly 13 to 35 ns. "No cache misses" is therefore true only for recently touched refs, as the guide said, but the penalty for an old ref is tens of ns at worst. The earlier wording "16 MB is bigger than a typical L2" does not hold on this machine's performance cores (L2 is 16 MB there). Compare with 250 ns to 20 µs tick-to-trade in D1: even a miss on every lookup would be small. In the fixtures the live orders are a few dozen recent refs, so the cold case effectively never occurs. Caveats: the cold column is a single timed pass, so it is noisy (the 64-ref row ranges 20 to 35 ns); it includes TLB misses; the machine and core type the app lands on vary. The benchmark source was not added to the repo.
 - *Tentative read:* a sound decision with a clear trade-off. A good candidate for "good decision".
 
 **Your verdict:** ______
@@ -289,6 +315,18 @@ What this shows:
 **Q4. Does the claim hold up?**
 - *What's right:* reading the top is a 32-byte copy. Updates cost a couple of comparisons. A partial reduce at the best level calls `RecomputeBest`, but the loop exits at once because the level is still non-empty.
 - *The assumption:* the scan from the old best to the next non-empty level costs one step per empty tick in between. In `basic` and `sweep` the gap is one tick. But if the best level is removed and the next level is far away (a thin book, or a large sweep), the loop walks up to 200,000 slots (1.6 MB). The doc's "levels near the top are close together" is an assumption about the data, not a guarantee.
+- *Scan cost, measured (microbenchmark of the `RecomputeBest` loop on a 200,000-slot `uint64_t` array, 20,000 repetitions per row, this Mac, -O2; the ~25 ns floor is the two clock reads around the loop):*
+
+  | Gap to next non-empty level | Scan time |
+  |---|---|
+  | 1 to 10 ticks ($0.01 to $0.10) | ~25 ns (timer floor) |
+  | 100 ticks ($1) | ~44 ns |
+  | 1,000 ticks ($10) | ~500 ns |
+  | 10,000 ticks ($100) | ~4.8 µs |
+  | 100,000 ticks ($1,000) | ~48 µs |
+
+  About 0.5 ns per empty tick, linear in the gap. A gap of a few cents costs nothing; a $10 gap costs about as much as a whole typical order's tick-to-trade (D1); a $100 gap is 10x that. The scan runs inside the callback before `Requote`, so it directly delays the order for that tick.
+- *Correctness edge:* the loop has no bounds check. It relies on `order_count > 0` meaning some slot is non-zero. If the two ever disagree (a bug in a code path that updates one but not the other), the loop reads past the end of the vector. This is undefined behavior, not an exception.
 - *Other risk:* duplicated state has to stay in sync in every code path, including the own-order handling (`MarkOwn`).
 - *How to check:* write a scenario with a wide gap behind the best level and time that callback.
 - *Tentative read:* good for the common case, with a known weak spot. It could also be argued as a "bad" decision for an adversarial book, but the fixtures give no evidence.

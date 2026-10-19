@@ -48,7 +48,9 @@ The capture tap already records each order's send time and the delivery that cau
 Replace this paragraph with your answer.
 
 \prompt{Describe a flaw in the market maker and a potential fix.}
-Replace this paragraph with your answer.
+The risk checks (\texttt{RiskGate}) signal failure by throwing. The design justifies this by saying exceptions cost nothing when not thrown, and that once one is thrown ``we are no longer on the hotpath''. The first half is true; the second is not. None of the throws stops the market maker. \texttt{BookInvalid} makes \texttt{Requote} return and the resting quotes stay, so the next message is back on the hotpath at once. \texttt{PositionLimit} is caught in \texttt{QuoteSide}, which blocks only that side, so the other side's order is sent right after an exception was thrown and caught. While the position sits at the limit (as in \texttt{position}), this happens on every message. After a halt is latched, \texttt{CheckStanding} also throws on every later message. A throw allocates the exception object and a \texttt{std::runtime\_error} string, and then unwinds through tables, which typically costs microseconds (we did not isolate this). In \texttt{quiet}, \texttt{position} and \texttt{gap}, the first messages, which have an invalid book, took about 2--5\,$\mu$s each against 0--42\,ns for steady-state messages, but the cold start is mixed in with this, so it is only suggestive.
+
+The fix is to have the checks return a status (a \texttt{[[nodiscard]]} enum or \texttt{bool}) and branch on it, which is a predictable compare costing about a nanosecond. The throw's one real benefit, that a check cannot be ignored, is kept by \texttt{[[nodiscard]]} with \texttt{-Werror=unused-result}. Orders do not change, so \texttt{make verify} should still pass. The cost is that safety is now enforced by the compiler flag and by discipline instead of by control flow, so a caller could still discard the result.
 
 \prompt{Describe a second flaw in the market maker and a potential fix.}
 Replace this paragraph with your answer.
