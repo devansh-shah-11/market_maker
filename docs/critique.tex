@@ -37,7 +37,7 @@
 \clearpage
 
 \prompt{Describe one possible execution of the hotpath.}
-Let's consider a hotpath execution. Taking the basic.scn example, a competitor sends a bid of 100.01 for 100 shares. \texttt{OnMarketData} decodes the message and checks the sequence number. The order book and the best bid are updated. Next, \texttt{Requote} checks the risk limits and calculates the fair value and credit to determine the new quotes. Since the bid price has not changed, no order needs to be sent for bid. However, the ask price changes from 100.04 to 100.03. \texttt{SendQuote} records the decision, writes to the decision log, and sends a replace request. The capture tap records the send time. Finally, the handler records its completion time and returns.
+Taking the basic.scn example, a competitor sends a bid of 100.01 for 100 shares. \texttt{OnMarketData} decodes the message and checks the sequence number. The order book and the best bid are updated. Next, \texttt{Requote} checks the book is valid, then calculates the fair value and credit. For each side, \texttt{QuoteSide} checks the position limit and whether the quote has changed. Since the bid price has not changed, no order is sent for the bid. However, the ask price changes from 100.04 to 100.03. \texttt{SendQuote} records the decision, writes to the decision log, and sends a replace request. The capture tap records the send time. The handler then records its completion time and returns.
 
 \prompt{Describe a flaw in the evaluation and a potential fix.}
 
@@ -45,7 +45,7 @@ The evaluation measures the time taken by the handler to process a message. The 
 
 \prompt{Describe a good design decision in the market maker.}
 
-One good design decision is storing orders in a flat array indexed by the exchange order reference instead of using a hash map. The array lets the system find an order directly without hashing or following pointers to separately allocated nodes. This works because exchange references are issued in increasing order, so the array is relatively dense and nearby orders are stored close together in memory. This also helps with cache locality. The 16\,MB array is allocated and zeroed at startup, so there is no allocation overhead during message processing. 
+One good design decision is storing orders in a flat array indexed by the exchange order reference instead of using a hash map. The array lets the system find an order directly without hashing or following pointers to separately allocated nodes. This works because exchange references are issued in increasing order, so the array is relatively dense. Recent orders are close together, so a lookup costs at most one cache miss. The 16\,MB array is allocated and zeroed at startup, so there is no allocation overhead during message processing, but its capacity is fixed at about a million references.
 
 \prompt{Describe a flaw in the market maker and a potential fix.}
 
